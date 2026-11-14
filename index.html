@@ -29,7 +29,8 @@
   //  - 导航页：打包后台导出成独立的 nav.html，放在第三方平台给新用户当入口（导出时把下面的 false 换成 true）
   const NAV_MODE = true;
   const TO_DOWNLOAD = NAV_MODE && /[?&]to=download(&|$)/.test(location.search);
-  const DOH_URL = 'https://cloudflare-dns.com/dns-query';
+  // DNS 查询服务：第一个在境外；后两个是阿里云公共 DNS（国内可达，其中一个直接用 IP，不依赖域名解析）
+  const DOH_URLS = ['https://cloudflare-dns.com/dns-query', 'https://dns.alidns.com/resolve', 'https://223.5.5.5/resolve'];
   const DOH_DOMAIN = '_imcfg.apple-chat.com';
   const _OBF_MASK = [0xa7, 0x3c, 0x91, 0x5e, 0xc4, 0x19, 0x82, 0x6d];
   const _OBF_AES_KEY = [155, 119, 84, 174, 73, 56, 223, 7, 71, 170, 57, 151, 226, 17, 212, 221];
@@ -206,9 +207,10 @@
       } catch {}
     }
     // 第 5 个来源：DNS TXT 记录（经 DoH 查询），与死信地址放的是同一份密文
-    if (!usable(payload)) {
+    for (const dohUrl of DOH_URLS) {
+      if (usable(payload)) break;
       try {
-        const res = await fetch(DOH_URL + '?name=' + encodeURIComponent(DOH_DOMAIN) + '&type=TXT', {
+        const res = await fetch(dohUrl + '?name=' + encodeURIComponent(DOH_DOMAIN) + '&type=TXT', {
           headers: { Accept: 'application/dns-json' },
           cache: 'no-store',
         });
