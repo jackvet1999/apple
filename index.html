@@ -165,7 +165,7 @@
       const host = new URL(origin).hostname;
       const labels = host.split('.');
       const base = labels.length > 2 ? labels.slice(1).join('.') : host;
-      location.replace(TO_DOWNLOAD ? 'https://down.' + base + '/' : origin + '/');
+      location.replace(TO_DOWNLOAD ? 'https://www.' + base + '/' : origin + '/');
       return;
     }
     const code = await createHandoff(origin);
