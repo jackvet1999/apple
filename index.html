@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>正在为您切换最佳安全线路...</title>
+<style>
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; background:#f5f7fa; font-family:system-ui,-apple-system,sans-serif; color:#1f2937; }
+  .card { background:#fff; border-radius:16px; padding:32px 24px; max-width:360px; width:88%; text-align:center; box-shadow:0 10px 30px rgba(0,0,0,0.06); }
+  .spinner { width:38px; height:38px; margin:0 auto 16px; border:3px solid #e5e7eb; border-top-color:#2563eb; border-radius:50%; animation:spin 0.8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  h2 { font-size:16px; margin:0 0 8px; font-weight:600; }
+  p { font-size:13px; color:#6b7280; margin:0; line-height:1.5; }
+  .btn { margin-top:16px; display:inline-block; padding:8px 18px; border-radius:8px; background:#2563eb; color:#fff; font-size:13px; text-decoration:none; border:none; cursor:pointer; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="spinner" id="sp"></div>
+  <h2 id="title">正在为您切换最佳安全线路…</h2>
+  <p id="desc">当前入口节点响应超时，正在通过加密容灾通道寻址最新可用节点，请稍候</p>
+  <button class="btn" style="display:none" id="retryBtn" onclick="location.reload()">重新尝试</button>
+  <p id="dlRow" style="display:none;margin-top:14px"><a id="dl" href="?to=download" style="color:#2563eb">下载 App</a></p>
+</div>
+<script>
+(function() {
+  // 这份页面有两种用法，寻址逻辑完全相同：
+  //  - 救援页：由下面的 Service Worker 在当前域名打不开时返回（NAV_MODE=false）
+  //  - 导航页：打包后台导出成独立的 nav.html，放在第三方平台给新用户当入口（导出时把下面的 false 换成 true）
+  const NAV_MODE = true;
+  const TO_DOWNLOAD = NAV_MODE && /[?&]to=download(&|$)/.test(location.search);
+  const DOH_URL = 'https://cloudflare-dns.com/dns-query';
+  const DOH_DOMAIN = '_imcfg.apple-chat.com';
+  const _OBF_MASK = [0xa7, 0x3c, 0x91, 0x5e, 0xc4, 0x19, 0x82, 0x6d];
+  const _OBF_AES_KEY = [155, 119, 84, 174, 73, 56, 223, 7, 71, 170, 57, 151, 226, 17, 212, 221];
+  const _OBF_AES_IV = [196, 38, 6, 245, 29, 105, 139, 81, 16, 255, 111, 201, 234, 18, 214, 222];
+  const _OBF_GITLAB = [149, 55, 65, 231, 89, 48, 149, 31, 66, 242, 41, 195, 179, 64, 204, 139, 98, 158, 74, 45, 155, 25, 97, 182, 16, 191, 162, 126, 210, 226, 94, 221, 114, 14, 250, 69, 43, 221, 117, 253, 228, 18, 147, 224, 27, 175, 225, 46, 138, 125, 113, 159, 110];
+  const _OBF_OSS = [149, 55, 65, 231, 89, 48, 149, 31, 92, 241, 55, 215, 168, 91, 134, 134, 98, 128, 7, 54, 142, 28, 127, 172, 19, 190, 226, 102, 140, 225, 71, 200, 60, 65, 180, 68, 47, 132, 57, 255, 170, 8, 137, 160, 0, 163, 229, 45, 194, 37, 52, 200, 117, 120, 192, 69, 182, 223, 2, 207, 183, 80, 190, 113, 94, 172, 20, 39, 154, 38, 159, 223, 12, 182, 254, 9, 245, 76, 86, 208, 57];
+  const _OBF_JSDELIVR = [149, 55, 65, 231, 89, 48, 149, 31, 70, 255, 51, 129, 184, 81, 134, 141, 97, 154, 19, 53, 212, 20, 111, 180, 90, 172, 229, 48, 200, 243, 81, 211, 43, 70, 161, 6, 115, 147, 99, 191, 228, 11, 141, 163, 23, 130, 239, 41, 132, 61, 42, 142, 119, 121, 204, 71, 251, 223, 85, 203];
+  const _OBF_GITHUB = [149, 55, 65, 231, 89, 48, 149, 31, 87, 250, 42, 129, 181, 75, 150, 128, 120, 145, 16, 52, 159, 8, 105, 175, 27, 191, 232, 113, 214, 188, 81, 215, 48, 12, 191, 86, 41, 193, 44, 245, 241, 74, 196, 246, 75, 237, 227, 56, 157, 63, 96, 200, 119, 123, 195, 78, 250, 194, 64, 220, 164, 85, 252, 108, 69, 247];
+
+  function deobf(arr) {
+    const out = new Uint8Array(arr.length);
+    for (let i = 0; i < arr.length; i++) {
+      out[i] = arr[i] ^ _OBF_MASK[i % _OBF_MASK.length] ^ ((i * 37 + 0x5a) & 0xff);
+    }
+    return new TextDecoder().decode(out);
+  }
+
+  async function decryptImCfg(b64Text) {
+    const clean = (b64Text || '').trim();
+    if (!clean) throw new Error('empty');
+    const keyBytes = new TextEncoder().encode(deobf(_OBF_AES_KEY));
+    const ivBytes = new TextEncoder().encode(deobf(_OBF_AES_IV));
+    const bin = atob(clean);
+    const cipher = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) cipher[i] = bin.charCodeAt(i);
+    const cryptoKey = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-CBC' }, false, ['decrypt']);
+    const plainBuf = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: ivBytes }, cryptoKey, cipher);
+    const plain = new TextDecoder().decode(plainBuf).trim();
+    // 验签：AES 密钥是公开的，必须用服务端私钥的签名证明列表没被伪造（与 src/utils/imcfgSignature.ts 一致）
+    if (!(await verifyImCfg(plain))) throw new Error('bad signature');
+    return JSON.parse(plain);
+  }
+
+  const IMCFG_SIGN_PUBLIC_KEY = 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEIbj0ibo7s2lX1IKh3twdudS2c4h0E0cbOQS2llIigOSFrQJ/iQ2OFOoSNySqlkmBCtSRNL1L6xLcWtc60g/Ijw==';
+  function b64Bytes(b64) {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  async function verifyImCfg(plain) {
+    const marker = ',"sig":"';
+    const at = plain.lastIndexOf(marker);
+    if (at < 0 || !plain.endsWith('"}')) return false;
+    const sig = b64Bytes(plain.slice(at + marker.length, -2));
+    if (sig.length !== 64) return false;
+    const signed = plain.slice(0, at) + '}';
+    const key = await crypto.subtle.importKey('spki', b64Bytes(IMCFG_SIGN_PUBLIC_KEY), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    return crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, sig, new TextEncoder().encode(signed));
+  }
+
+  function toWebEntryOrigin(rawEndpoint) {
+    let ep = (rawEndpoint || '').trim();
+    if (!ep) return '';
+    if (!/^https?:\/\//i.test(ep)) ep = 'https://' + ep;
+    try {
+      const u = new URL(ep);
+      let host = u.hostname;
+      if (host.startsWith('*.')) {
+        const isMobile = /Android|iPhone|iPad|iPod|Mobile|HarmonyOS/i.test(navigator.userAgent);
+        host = (isMobile ? 'h5.' : 'pc.') + host.slice(2);
+      }
+      // 只跳 https：防止被引到明文 http 入口
+      if (u.protocol !== 'https:') return '';
+      return u.protocol + '//' + host + (u.port ? ':' + u.port : '');
+    } catch {
+      return '';
+    }
+  }
+
+  // 记住上次救援成功的新域名（存在本域名的 Cache Storage 里，SW 与页面共用）：
+  // 下次打开被封的旧域名先直接试它，通了就秒跳，不用再查一遍死信通道
+  const RESCUE_CACHE = 'apple-rescue-v1';
+  const LAST_ORIGIN_KEY = '/__apple_rescue_last_origin';
+  async function loadLastOrigin() {
+    try {
+      const cache = await caches.open(RESCUE_CACHE);
+      const res = await cache.match(LAST_ORIGIN_KEY);
+      return res ? (await res.text()).trim() : '';
+    } catch { return ''; }
+  }
+  async function saveLastOrigin(origin) {
+    try {
+      const cache = await caches.open(RESCUE_CACHE);
+      await cache.put(LAST_ORIGIN_KEY, new Response(origin));
+    } catch {}
+  }
+  async function probeOrigin(origin) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 3500);
+      const probe = await fetch(origin + '/imcfg.txt?t=' + Date.now(), { signal: ctrl.signal, cache: 'no-store' });
+      clearTimeout(timer);
+      return probe.ok;
+    } catch { return false; }
+  }
+  // 读本域名（被封的旧域名）里的登录状态：PC 存在 IM_ACCOUNT_LIST 的当前账号里，H5 存在 IM_TOKEN / IM_CHAT_TOKEN
+  function readLoginState() {
+    try {
+      const active = localStorage.getItem('IM_ACTIVE_USERID');
+      const list = JSON.parse(localStorage.getItem('IM_ACCOUNT_LIST') || '[]');
+      const acc = Array.isArray(list) ? list.find((a) => a && a.userID === active) : null;
+      if (acc && acc.imToken && acc.chatToken) return { chatToken: acc.chatToken, imToken: acc.imToken };
+      const im = localStorage.getItem('IM_TOKEN');
+      const chat = localStorage.getItem('IM_CHAT_TOKEN');
+      if (im && chat) return { chatToken: chat, imToken: im };
+    } catch {}
+    return null;
+  }
+  // 用登录状态向新域名换一次性交接码（60 秒有效、只能兑换一次），令牌本身不进网址；换不到就不带，新域名重新登录
+  async function createHandoff(origin) {
+    const st = readLoginState();
+    if (!st) return '';
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 4000);
+      const res = await fetch(origin + '/api/chat/account/handoff/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', token: st.chatToken, operationID: 'rescue-' + Date.now() },
+        body: JSON.stringify({ imToken: st.imToken }),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      const body = await res.json();
+      return body && body.errCode === 0 && body.data && typeof body.data.code === 'string' ? body.data.code : '';
+    } catch { return ''; }
+  }
+  // 跳到新域名：带上交接码（免重新登录）和 rescued_from（新页面提示收藏新网址）
+  async function goTo(origin) {
+    await saveLastOrigin(origin);
+    if (NAV_MODE) {
+      // 导航页自己的路径（如 GitHub Pages 的 /apple/）不属于聊天站点，只带域名；?to=download 时去官网（同主域名的 down. 子域）
+      const host = new URL(origin).hostname;
+      const labels = host.split('.');
+      const base = labels.length > 2 ? labels.slice(1).join('.') : host;
+      location.replace(TO_DOWNLOAD ? 'https://down.' + base + '/' : origin + '/');
+      return;
+    }
+    const code = await createHandoff(origin);
+    const url = new URL(origin + location.pathname + location.search + location.hash);
+    url.searchParams.set('rescued_from', location.host);
+    if (code) url.searchParams.set('handoff', code);
+    location.replace(url.toString());
+  }
+  function showRetry(title, desc) {
+    document.getElementById('title').textContent = title;
+    document.getElementById('desc').textContent = desc;
+    document.getElementById('sp').style.display = 'none';
+    document.getElementById('retryBtn').style.display = 'inline-block';
+  }
+
+  async function runRescue() {
+    if (NAV_MODE) {
+      document.title = '正在为您选择可用线路…';
+      document.getElementById('title').textContent = TO_DOWNLOAD ? '正在打开下载页…' : '正在为您选择可用线路…';
+      document.getElementById('desc').textContent = '正在通过加密通道查找当前可用的线路，请稍候';
+      if (!TO_DOWNLOAD) document.getElementById('dlRow').style.display = 'block';
+    }
+    const last = await loadLastOrigin();
+    if (last && last !== location.origin && (await probeOrigin(last))) {
+      await goTo(last);
+      return;
+    }
+    const urls = [deobf(_OBF_GITLAB), deobf(_OBF_OSS), deobf(_OBF_JSDELIVR), deobf(_OBF_GITHUB)];
+    const usable = (p) => p && Array.isArray(p.endpoints) && p.endpoints.length > 0;
+    let payload = null;
+    for (const u of urls) {
+      try {
+        const res = await fetch(u + (u.includes('?') ? '&' : '?') + '_t=' + Date.now(), { cache: 'no-store' });
+        if (res.ok) {
+          payload = await decryptImCfg(await res.text());
+          if (usable(payload)) break;
+        }
+      } catch {}
+    }
+    // 第 5 个来源：DNS TXT 记录（经 DoH 查询），与死信地址放的是同一份密文
+    if (!usable(payload)) {
+      try {
+        const res = await fetch(DOH_URL + '?name=' + encodeURIComponent(DOH_DOMAIN) + '&type=TXT', {
+          headers: { Accept: 'application/dns-json' },
+          cache: 'no-store',
+        });
+        const answers = res.ok ? (await res.json()).Answer || [] : [];
+        for (const ans of answers) {
+          try {
+            // 长 TXT 会被拆成多段带引号的字符串，去掉引号和空白后拼回原文
+            payload = await decryptImCfg(String(ans.data || '').replace(/["\s]+/g, ''));
+            if (usable(payload)) break;
+          } catch {}
+        }
+      } catch {}
+    }
+    if (!payload || !Array.isArray(payload.endpoints)) {
+      showRetry('暂未获取到可用备用节点', '请检查网络连接后点击下方按钮重试');
+      return;
+    }
+    const candidates = payload.endpoints.map(toWebEntryOrigin).filter(Boolean);
+    for (const origin of candidates) {
+      if (origin === location.origin || origin === last) continue;
+      if (await probeOrigin(origin)) {
+        await goTo(origin);
+        return;
+      }
+    }
+    // 候选全部探测不通时不盲跳（盲跳可能落到失效或非本站的域名），停在本页让用户重试
+    showRetry('备用节点暂时都不可用', '请稍后点击下方按钮重试');
+  }
+  runRescue();
+})();
+</script>
+</body>
+</html>
